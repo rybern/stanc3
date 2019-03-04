@@ -632,6 +632,145 @@ let analysis_example (prog : stmt_loc prog) (var : string) : unit =
     ^ Sexp.to_string [%sexp (expr_deps : vexpr Set.Poly.t)] )
 
 (***********************************)
+(* Utility functions               *)
+(***********************************)
+
+type 'a statements_with =
+  | StatementsWith of ('a * 'a statements_with statement)
+
+let rec traverse_statement
+    (f : 'd -> 'f -> 'b -> 'a statements_with -> 'd * 'f * 'b * 'c)
+    (branch_join : 'b -> 'b -> 'b) (down_state : 'd) (fwd_state : 'f)
+    (branch_state : 'b) (stmt_with : 'a statements_with) :
+    'f * 'b * 'c statements_with =
+  let (StatementsWith (_, stmt)) = stmt_with in
+  let down_state', fwd_state', branch_state', b =
+    f down_state fwd_state branch_state stmt_with
+  in
+  match stmt with
+  | IfElse (pred, then_stmt, else_stmt_opt) ->
+      let then_fwd_state, then_branch_state, then_b =
+        traverse_statement f branch_join down_state' fwd_state' branch_state'
+          then_stmt
+      in
+      let else_result_opt =
+        Option.map else_stmt_opt ~f:(fun else_stmt ->
+            traverse_statement f branch_join down_state' then_fwd_state
+              branch_state' else_stmt )
+      in
+      Option.value_map else_result_opt
+        ~default:
+          ( then_fwd_state
+          , then_branch_state
+          , StatementsWith (b, IfElse (pred, then_b, None)) )
+        ~f:(fun (else_fwd_state, else_branch_state, else_b) ->
+          ( else_fwd_state
+          , branch_join then_branch_state else_branch_state
+          , StatementsWith (b, IfElse (pred, then_b, Some else_b)) ) )
+  | While (pred, body) ->
+      let body_fwd_state, body_branch_state, body_b =
+        traverse_statement f branch_join down_state' fwd_state' branch_state'
+          body
+      in
+      ( body_fwd_state
+      , branch_join branch_state body_branch_state
+      , StatementsWith (b, While (pred, body_b)) )
+  | For vars ->
+      let body_fwd_state, body_branch_state, body_b =
+        traverse_statement f branch_join down_state' fwd_state' branch_state'
+          vars.body
+      in
+      ( body_fwd_state
+      , branch_join branch_state body_branch_state
+      , StatementsWith (b, For {vars with body= body_b}) )
+  (* A Block for now corresponds tightly with a C++ block:
+     variables declared within it have local scope and are garbage collected
+     when the block ends.*)
+  | Block stmts ->
+      let fwd, branch, stmts' =
+        List.fold_left stmts ~init:(fwd_state', branch_state', [])
+          ~f:(fun (fwd_state, branch_state, so_far) stmt ->
+            let stmt_fwd_state, stmt_branch_state, stmt_b =
+              traverse_statement f branch_join down_state' fwd_state
+                branch_state stmt
+            in
+            (stmt_fwd_state, stmt_branch_state, so_far @ [stmt_b]) )
+      in
+      (fwd, branch, StatementsWith (b, Block stmts'))
+  (* An SList does not share any of Block's semantics - it is just multiple
+     (ordered!) statements*)
+  | SList stmts ->
+      let fwd, branch, stmts' =
+        List.fold_left stmts ~init:(fwd_state', branch_state', [])
+          ~f:(fun (fwd_state, branch_state, so_far) stmt ->
+            let stmt_fwd_state, stmt_branch_state, stmt_b =
+              traverse_statement f branch_join down_state' fwd_state
+                branch_state stmt
+            in
+            (stmt_fwd_state, stmt_branch_state, so_far @ [stmt_b]) )
+      in
+      (fwd, branch, StatementsWith (b, Block stmts'))
+  | FunDef vars ->
+      let body_fwd_state, body_branch_state, body_b =
+        traverse_statement f branch_join down_state' fwd_state' branch_state'
+          vars.fdbody
+      in
+      ( body_fwd_state
+      , branch_join branch_state body_branch_state
+      , StatementsWith (b, FunDef {vars with fdbody= body_b}) )
+  (* OCaml actually infers the wrong type if these statements are all caught togethers,
+     since it would still think stmt is of type 'a statements_with, it thinks 'a = 'c.
+     I'm pretty shocked it can silently replace the given type signature.
+  *)
+  | Assignment _ as s -> (fwd_state', branch_state', StatementsWith (b, s))
+  | NRFunApp _ as s -> (fwd_state', branch_state', StatementsWith (b, s))
+  | Check _ as s -> (fwd_state', branch_state', StatementsWith (b, s))
+  | MarkLocation _ as s -> (fwd_state', branch_state', StatementsWith (b, s))
+  | Break as s -> (fwd_state', branch_state', StatementsWith (b, s))
+  | Continue as s -> (fwd_state', branch_state', StatementsWith (b, s))
+  | Return _ as s -> (fwd_state', branch_state', StatementsWith (b, s))
+  | Skip as s -> (fwd_state', branch_state', StatementsWith (b, s))
+  | Decl _ as s -> (fwd_state', branch_state', StatementsWith (b, s))
+
+let label_statements (stmts : 's statements_with) :
+    (label * 's) statements_with =
+  let _, _, labeled =
+    traverse_statement
+      (fun _ last _ (StatementsWith ((s : 's), _) : 's statements_with) ->
+        ((), last + 1, (), ((last, (s : 's)) : label * 's)) )
+      (fun _ _ -> ())
+      () 1 () stmts
+  in
+  labeled
+
+(*let traverse_labeled
+    (f : 'd -> 'f -> 'b -> (label * 'a) statements_with -> 'd * 'f * 'b * 'c)
+    (branch_join : 'b -> 'b -> 'b) (down_state : 'd) (fwd_state : 'f)
+    (branch_state : 'b) (stmts : (label * 'a) statements_with) : 'c Int.Map.t =
+*)
+let traverse_labeled : ('d -> 'f -> 'b -> (label * 'a) statements_with -> 'd * 'f * 'b * 'c)
+  -> ('b -> 'b -> 'b) -> ('d) -> ('f)
+  -> ('b) -> ((label * 'a) statements_with) -> 'c Int.Map.t =
+  fun f branch_join down_state fwd_state branch_state stmts ->
+
+  let fwd_state' = (fwd_state, Int.Map.empty) in
+  let f' d (fwd, map) b (StatementsWith ((label, _), _) as stmt) =
+    let d', fwd', b', c' = f d fwd b stmt in
+    let map' = merge_label_maps map (Int.Map.singleton label c') in
+    (d', (fwd', map'), b', c')
+  in
+  let (_, map), _, _ =
+    traverse_statement f' branch_join down_state fwd_state' branch_state stmts
+  in
+  map
+
+let possible_previous (stmts : (label * 'a) statements_with) : (label Set.Poly.t) Int.Map.t =
+  traverse_labeled
+    (fun _ _ prev (StatementsWith ((label, _), _)) -> ((), (), Set.Poly.singleton label, prev))
+    Set.union
+    () () (Set.Poly.singleton 0) stmts
+
+(***********************************)
 (* Tests                           *)
 (***********************************)
 
@@ -994,6 +1133,7 @@ let%expect_test "program_df_graphs example" =
              (loc (MirNode "\"string\", line 13-13"))))))
          (possible_exits (1)) (probabilistic_nodes ()))))
     |}]
+
 (*
 transformed data {
   int<lower=0> N = 50;
@@ -1053,13 +1193,11 @@ transformed data {
   let exits = df_graph.possible_exits in
   let dependencies = labels_dependencies df_graph false exits in
   print_s [%sexp (dependencies : label Set.Poly.t)] ;
-  [%expect
-    {|
+  [%expect {|
       (0 1 4 5 6 7 8)
     |}]
 
-
-    (*
+(*
        TODO
 let%expect_test "top_var_dependencies example" =
   let ast =
@@ -1209,8 +1347,6 @@ model {
              (loc StartOfBlock)))))
          (possible_exits (0)) (probabilistic_nodes ()))))
     |}]
-
-
 
 let%expect_test "LDA example" =
   let ast =
