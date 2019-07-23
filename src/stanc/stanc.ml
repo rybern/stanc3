@@ -3,6 +3,7 @@
 open Core_kernel
 open Frontend
 open Stan_math_backend
+open Analysis_and_optimization.Factor_graph
 
 (** The main program. *)
 let version = "stanc version 3.0 alpha"
@@ -16,6 +17,7 @@ let model_file = ref ""
 let pretty_print_program = ref false
 let print_model_cpp = ref false
 let dump_mir = ref false
+let dump_dot = ref false
 let output_file = ref ""
 let generate_data = ref false
 
@@ -43,6 +45,9 @@ let options =
     ; ( "--debug-mir"
       , Arg.Set dump_mir
       , " For debugging purposes: print the MIR." )
+    ; ( "--print-dot"
+      , Arg.Set dump_dot
+      , " To demo dependency analysis, print a graphviz dot file of the factor graph. To generate a .png of the graph, pipe this output to a .dot file and use \"dot -Tpng FILE.dot -o outfile.png\"." )
     ; ( "--auto-format"
       , Arg.Set pretty_print_program
       , " Pretty prints the program to the console" )
@@ -50,7 +55,7 @@ let options =
       , Arg.Unit
           (fun _ ->
             print_endline (version ^ " " ^ "(" ^ Sys.os_type ^ ")") ;
-            exit 1 )
+            exit 1)
       , " Display stanc version number" )
     ; ( "--name"
       , Arg.Set_string Semantic_check.model_name
@@ -69,8 +74,7 @@ let options =
     ; ( "--include_paths"
       , Arg.String
           (fun str ->
-            Preprocessor.include_paths := String.split_on_chars ~on:[','] str
-            )
+            Preprocessor.include_paths := String.split_on_chars ~on:[','] str)
       , " Takes a comma-separated list of directories that may contain a file \
          in an #include directive (default = \"\")" ) ]
 
@@ -94,8 +98,7 @@ let use_file filename =
           exit 1
     with Errors.SyntaxError err ->
       Errors.report_syntax_error err ;
-      exit 1
-  in
+      exit 1 in
   Debugging.ast_logger ast ;
   if !pretty_print_program then
     print_endline (Pretty_printing.pretty_print_program ast) ;
@@ -113,13 +116,15 @@ let use_file filename =
           exit 1
     with Errors.SemanticError err ->
       Errors.report_semantic_error err ;
-      exit 1
-  in
+      exit 1 in
   if !generate_data then
     print_endline (Debug_data_generation.print_data_prog typed_ast) ;
   Debugging.typed_ast_logger typed_ast ;
   if not !pretty_print_program then (
     let mir = Ast_to_Mir.trans_prog filename typed_ast in
+    if !dump_dot then
+      let dotfile = factor_graph_to_dot (prog_factor_graph mir) in
+      print_string dotfile;
     if !dump_mir then
       Sexp.pp_hum Format.std_formatter [%sexp (mir : Middle.typed_prog)] ;
     let cpp = Format.asprintf "%a" Stan_math_code_gen.pp_prog mir in

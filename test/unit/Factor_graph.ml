@@ -13,10 +13,12 @@ let example1_program =
   let ast =
     Parse.parse_string Parser.Incremental.program
       {|
+        parameters
+        {
+          real i;
+        }
         model
         {                                // 1
-          int i                          // 2: 3
-              = 0;                       //    4
           if (i < 0)                     // 5
           {                              // 6
             print(i);                    // 7
@@ -53,7 +55,23 @@ let%expect_test "Variable dependency example" =
   print_s [%sexp (deps : (label * factor * vexpr Set.Poly.t) list)] ;
   [%expect
     {|
-      ((19 Reject ((VVar i) (VVar j)))
-       (21 (TargetTerm (Lit Int 1)) ((VVar i) (VVar j)))
-       (21 (TargetTerm (Lit Int 1)) ((VVar i) (VVar j))))
+      ((19 Reject ((VVar i))) (21 (TargetTerm (Lit Int 1)) ((VVar i)))
+       (21 (TargetTerm (Lit Int 1)) ((VVar i))))
+    |}]
+
+let%expect_test "Variable dependency example" =
+  (*let deps = snd (build_predecessor_graph example1_statement_map) in*)
+  let deps = factor_graph_to_dot (prog_factor_graph example1_program) in
+  print_endline deps ;
+  [%expect
+    {|
+      graph {
+      reject
+      1
+      1
+      i
+      reject -- i
+      1 -- i
+      1 -- i
+      }
     |}]
