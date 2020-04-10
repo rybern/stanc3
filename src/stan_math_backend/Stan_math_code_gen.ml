@@ -353,8 +353,8 @@ let rec pp_for_loop_iteratee ?(index_ids = []) ppf (iteratee, dims, pp_body, st)
    in
    let row_idx = Expr.Helpers.add_int_index nz_row (idx loopvar) in
    let col_idx = Expr.Helpers.add_int_index nz_col (idx loopvar) in
-   let pp_row = pp_expr ppf row_idx in
-   let pp_col = pp_expr ppf col_idx in
+   let pp_row = Fmt.strf "%a" pp_expr row_idx in
+   let pp_col = Fmt.strf "%a" pp_expr col_idx in
       pp_for_loop ppf
       ( loopvar
       , Expr.Helpers.loop_bottom
