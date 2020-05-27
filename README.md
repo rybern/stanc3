@@ -27,7 +27,7 @@ The AST intends to keep very close to Stan-level semantics and syntax in every w
 
 ## Getting development on stanc3 up and running locally
 
-### To build, test, and run
+### Using Opam+Make+Dune to build, test, and run
 To be able to build the project, make sure you have GNU make installed.
 
 To install OCaml and the dependencies we need to build and do development, run `scripts/setup_dev_env.sh`.
@@ -47,7 +47,7 @@ Run `./_build/default/src/stanc/stanc.exe` on individual .stan file to compile i
 
 Use `dune build @update_messages` to see if your additions to the parser have added any new error message possibilities, and `dune promote` to accept them.
 
-### Nix, an alternative way to build, test and run
+### Using Nix to build, test and run
 [Nix](https://nixos.org/nix/) is a declarative package manager with a focus on reproducible builds.
 You can use Nix to build, test and run Stanc3 without using Opam.
 
