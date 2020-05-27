@@ -51,8 +51,8 @@ Use `dune build @update_messages` to see if your additions to the parser have ad
 [Nix](https://nixos.org/nix/) is a declarative package manager with a focus on reproducible builds.
 You can use Nix to build, test and run Stanc3 without using Opam.
 
-After you install nix, you can build Stanc3 by running the following command in the `stanc3` directory:
-    nix-build
+After you install nix, you can build Stanc3 by running the following command in the `stanc3` directory:\
+    nix-build\
 The binary will be in `result/bin/stanc`. This may take a minute the first time you run it.
 Alternatively, the following is sometimes a faster way to build:
     nix-shell --command "dune build"
