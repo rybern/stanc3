@@ -443,6 +443,7 @@ let validate_sized decl_id meta transform st =
   let rec dims_check = function
     | SizedType.SInt | SReal -> []
     | SArray (st, s) -> check FnValidateSize s :: dims_check st
+    | STuple ts -> List.concat_map ~f:dims_check ts
     | SVector s | SRowVector s ->
         let fn =
           match transform with
