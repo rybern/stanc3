@@ -196,17 +196,7 @@ function_def:
       }
     }
 
-closure_def:
-  | FUNCTIONBLOCK rt=return_type name=decl_identifier LPAREN args=separated_list(COMMA, arg_decl)
-    RPAREN b=statement
-    {
-      grammar_logger "function_def" ;
-      {stmt=FunDef {returntype = rt; funname = name;
-                    captures = Some (); arguments = fix_argtypes args; body=b;};
-       smeta={loc=Location_span.of_positions_exn $loc}
-      }
-    }
-
+%inline
 return_type:
   | VOID
     { grammar_logger "return_type VOID" ; Void }
@@ -232,24 +222,106 @@ always(x):
   | x=x
     { Some(x) }
 
+%inline
 unsized_type:
-  | ARRAY n_opt=always(unsized_dims) bt=basic_type
-  | bt=basic_type n_opt=option(unsized_dims)
+  | dims_lhs=lhs bt=basic_type(no_assign)
     {  grammar_logger "unsized_type";
-       nest_unsized_array bt (Option.value n_opt ~default:0)
+       let empty_ix ix = match ix with
+         | All -> Some 1
+         | _ -> None
+       in
+       let empty_ixs ixs =
+         List.fold_left
+           ~init:(Some 0)
+           ~f:(Option.map2 ~f:(fun ixs ix -> ix+ixs))
+           (List.map ~f:empty_ix
+              (List.rev ixs))
+       in
+       let dims = match dims_lhs with
+         | ({expr= Indexed ({expr= Variable {name="array"; _}; _}, ixs); _}) ->
+            (match empty ixs with
+             | Some n -> n
+             | None -> error "Unexpected index inside array return type; expected only commas.")
+         | _ -> error "Found a type following an expression."
+       in
+       nest_unsized_array (Type.to_unsized bt) (Option.value n_opt ~default:0)
+    }
+  | bt=basic_type(no_assign) n_opt=ioption(unsized_dims)
+    {  grammar_logger "unsized_type";
+       nest_unsized_array (Type.to_unsized bt) (Option.value n_opt ~default:0)
     }
 
-basic_type:
+%inline
+basic_type(extension):
   | INT
-    {  grammar_logger "basic_type INT" ; UnsizedType.UInt  }
+    {  grammar_logger "basic_type INT" ; Type.Unsized UnsizedType.UInt  }
   | REAL
-    {  grammar_logger "basic_type REAL"  ; UnsizedType.UReal }
+    {  grammar_logger "basic_type REAL"  ; Type.Unsized UnsizedType.UReal }
   | VECTOR
-    {  grammar_logger "basic_type VECTOR" ; UnsizedType.UVector }
+    {
+      grammar_logger "basic_type VECTOR unsized" ;
+      Type.Unsized UnsizedType.UVector
+    }
+  | VECTOR size=size_1d
+    {
+      grammar_logger "basic_type VECTOR sized" ;
+      Type.Sized SizedType.SVector e
+    }
   | ROWVECTOR
-    {  grammar_logger "basic_type ROWVECTOR" ; UnsizedType.URowVector }
+    {
+      grammar_logger "basic_type ROWVECTOR unsized" ;
+      Type.Unsized UnsizedType.URowVector
+    }
+  | ROWVECTOR size_1d
+    {
+      grammar_logger "basic_type ROWVECTOR sized" ;
+      Type.Sized (SizedType.SRowVector e)
+    }
   | MATRIX
-    {  grammar_logger "basic_type MATRIX" ; UnsizedType.UMatrix }
+    {
+      grammar_logger "basic_type MATRIX unsized" ;
+      Type.Unsized UnsizedType.UMatrix
+    }
+  | MATRIX size=size_2d
+    {
+      grammar_logger "basic_type MATRIX sized" ;
+      Type.Sized (SizedType.SMatrix (e1, e2))
+    }
+  | e=extension
+    { e }
+
+top_var_extension:
+  | ORDERED LBRACK e=expression RBRACK
+    { grammar_logger "ORDERED_top_var_type" ; (SVector e, Ordered) }
+  | POSITIVEORDERED LBRACK e=expression RBRACK
+    {
+      grammar_logger "POSITIVEORDERED_top_var_type" ;
+      (SVector e, PositiveOrdered)
+    }
+  | SIMPLEX LBRACK e=expression RBRACK
+    { grammar_logger "SIMPLEX_top_var_type" ; (SVector e, Simplex) }
+  | UNITVECTOR LBRACK e=expression RBRACK
+    { grammar_logger "UNITVECTOR_top_var_type" ; (SVector e, UnitVector) }
+  | CHOLESKYFACTORCORR LBRACK e=expression RBRACK
+    {
+      grammar_logger "CHOLESKYFACTORCORR_top_var_type" ;
+      (SMatrix (e, e), CholeskyCorr)
+    }
+  | CHOLESKYFACTORCOV LBRACK e1=expression oe2=option(pair(COMMA, expression))
+    RBRACK
+    {
+      grammar_logger "CHOLESKYFACTORCOV_top_var_type" ;
+      match oe2 with Some (_,e2) -> ( SMatrix (e1, e2), CholeskyCov)
+                   | _           ->  (SMatrix (e1, e1),  CholeskyCov)
+    }
+  | CORRMATRIX LBRACK e=expression RBRACK
+    { grammar_logger "CORRMATRIX_top_var_type" ; (SMatrix (e, e), Correlation) }
+  | COVMATRIX LBRACK e=expression RBRACK
+    { grammar_logger "COVMATRIX_top_var_type" ; (SMatrix (e, e), Covariance) }
+
+unsized_dims_nonempty:
+  | LBRACK cs=nonempty_list(COMMA) RBRACK
+    { grammar_logger "unsized_dims" ; List.length(cs) + 1 }
 
 unsized_dims:
   | LBRACK cs=list(COMMA) RBRACK
@@ -385,73 +457,81 @@ decl(type_rule, rhs):
     )}
 
 var_decl:
-  | d_fn=decl(sized_basic_type, expression)
+  | d_fn=decl(basic_type(no_assign), expression)
     { grammar_logger "var_decl" ;
       d_fn ~is_global:false
     }
 
 top_var_decl:
-  | d_fn=decl(top_var_type, expression)
+  | d_fn=decl(basic_type(top_var_extension), expression)
     { grammar_logger "top_var_decl" ;
       d_fn ~is_global:true
     }
 
 top_var_decl_no_assign:
-  | d_fn=decl(top_var_type, no_assign)
+  | d_fn=decl(basic_type(top_var_extension), no_assign)
     { grammar_logger "top_var_decl_no_assign" ;
       d_fn ~is_global:true
     }
 
-sized_basic_type:
-  | INT
-    { grammar_logger "INT_var_type" ; (SizedType.SInt, Identity) }
-  | REAL
-    { grammar_logger "REAL_var_type" ; (SizedType.SReal, Identity) }
-  | VECTOR LBRACK e=expression RBRACK
-    { grammar_logger "VECTOR_var_type" ; (SizedType.SVector e, Identity) }
-  | ROWVECTOR LBRACK e=expression RBRACK
-    { grammar_logger "ROWVECTOR_var_type" ; (SizedType.SRowVector e , Identity) }
-  | MATRIX LBRACK e1=expression COMMA e2=expression RBRACK
-    { grammar_logger "MATRIX_var_type" ; (SizedType.SMatrix (e1, e2), Identity) }
+size_1d:
+  | LBRACK e=expression RBRACK
+    { e }
 
-top_var_type:
-  | INT r=range_constraint
-    { grammar_logger "INT_top_var_type" ; (SInt, r) }
-  | REAL c=type_constraint
-    { grammar_logger "REAL_top_var_type" ; (SReal, c) }
-  | VECTOR c=type_constraint LBRACK e=expression RBRACK
-    { grammar_logger "VECTOR_top_var_type" ; (SVector e, c) }
-  | ROWVECTOR c=type_constraint LBRACK e=expression RBRACK
-    { grammar_logger "ROWVECTOR_top_var_type" ; (SRowVector e, c) }
-  | MATRIX c=type_constraint LBRACK e1=expression COMMA e2=expression RBRACK
-    { grammar_logger "MATRIX_top_var_type" ; (SMatrix (e1, e2), c) }
-  | ORDERED LBRACK e=expression RBRACK
-    { grammar_logger "ORDERED_top_var_type" ; (SVector e, Ordered) }
-  | POSITIVEORDERED LBRACK e=expression RBRACK
-    {
-      grammar_logger "POSITIVEORDERED_top_var_type" ;
-      (SVector e, PositiveOrdered)
-    }
-  | SIMPLEX LBRACK e=expression RBRACK
-    { grammar_logger "SIMPLEX_top_var_type" ; (SVector e, Simplex) }
-  | UNITVECTOR LBRACK e=expression RBRACK
-    { grammar_logger "UNITVECTOR_top_var_type" ; (SVector e, UnitVector) }
-  | CHOLESKYFACTORCORR LBRACK e=expression RBRACK
-    {
-      grammar_logger "CHOLESKYFACTORCORR_top_var_type" ;
-      (SMatrix (e, e), CholeskyCorr)
-    }
-  | CHOLESKYFACTORCOV LBRACK e1=expression oe2=option(pair(COMMA, expression))
-    RBRACK
-    {
-      grammar_logger "CHOLESKYFACTORCOV_top_var_type" ;
-      match oe2 with Some (_,e2) -> ( SMatrix (e1, e2), CholeskyCov)
-                   | _           ->  (SMatrix (e1, e1),  CholeskyCov)
-    }
-  | CORRMATRIX LBRACK e=expression RBRACK
-    { grammar_logger "CORRMATRIX_top_var_type" ; (SMatrix (e, e), Correlation) }
-  | COVMATRIX LBRACK e=expression RBRACK
-    { grammar_logger "COVMATRIX_top_var_type" ; (SMatrix (e, e), Covariance) }
+size_2d:
+  | LBRACK e1=expression COMMA e2=expression RBRACK
+    { (e1, e2) }
+
+(* sized_basic_type:
+ *   | INT
+ *     { grammar_logger "INT_var_type" ; (SizedType.SInt, Identity) }
+ *   | REAL
+ *     { grammar_logger "REAL_var_type" ; (SizedType.SReal, Identity) }
+ *   | VECTOR LBRACK e=expression RBRACK
+ *     { grammar_logger "VECTOR_var_type" ; (SizedType.SVector e, Identity) }
+ *   | ROWVECTOR LBRACK e=expression RBRACK
+ *     { grammar_logger "ROWVECTOR_var_type" ; (SizedType.SRowVector e , Identity) }
+ *   | MATRIX LBRACK e1=expression COMMA e2=expression RBRACK
+ *     { grammar_logger "MATRIX_var_type" ; (SizedType.SMatrix (e1, e2), Identity) } *)
+
+(* top_var_type:
+ *   | INT r=range_constraint
+ *     { grammar_logger "INT_top_var_type" ; (SInt, r) }
+ *   | REAL c=type_constraint
+ *     { grammar_logger "REAL_top_var_type" ; (SReal, c) }
+ *   | VECTOR c=type_constraint LBRACK e=expression RBRACK
+ *     { grammar_logger "VECTOR_top_var_type" ; (SVector e, c) }
+ *   | ROWVECTOR c=type_constraint LBRACK e=expression RBRACK
+ *     { grammar_logger "ROWVECTOR_top_var_type" ; (SRowVector e, c) }
+ *   | MATRIX c=type_constraint LBRACK e1=expression COMMA e2=expression RBRACK
+ *     { grammar_logger "MATRIX_top_var_type" ; (SMatrix (e1, e2), c) }
+ *   | ORDERED LBRACK e=expression RBRACK
+ *     { grammar_logger "ORDERED_top_var_type" ; (SVector e, Ordered) }
+ *   | POSITIVEORDERED LBRACK e=expression RBRACK
+ *     {
+ *       grammar_logger "POSITIVEORDERED_top_var_type" ;
+ *       (SVector e, PositiveOrdered)
+ *     }
+ *   | SIMPLEX LBRACK e=expression RBRACK
+ *     { grammar_logger "SIMPLEX_top_var_type" ; (SVector e, Simplex) }
+ *   | UNITVECTOR LBRACK e=expression RBRACK
+ *     { grammar_logger "UNITVECTOR_top_var_type" ; (SVector e, UnitVector) }
+ *   | CHOLESKYFACTORCORR LBRACK e=expression RBRACK
+ *     {
+ *       grammar_logger "CHOLESKYFACTORCORR_top_var_type" ;
+ *       (SMatrix (e, e), CholeskyCorr)
+ *     }
+ *   | CHOLESKYFACTORCOV LBRACK e1=expression oe2=option(pair(COMMA, expression))
+ *     RBRACK
+ *     {
+ *       grammar_logger "CHOLESKYFACTORCOV_top_var_type" ;
+ *       match oe2 with Some (_,e2) -> ( SMatrix (e1, e2), CholeskyCov)
+ *                    | _           ->  (SMatrix (e1, e1),  CholeskyCov)
+ *     }
+ *   | CORRMATRIX LBRACK e=expression RBRACK
+ *     { grammar_logger "CORRMATRIX_top_var_type" ; (SMatrix (e, e), Correlation) }
+ *   | COVMATRIX LBRACK e=expression RBRACK
+ *     { grammar_logger "COVMATRIX_top_var_type" ; (SMatrix (e, e), Covariance) } *)
 
 type_constraint:
   | r=range_constraint
@@ -792,7 +872,7 @@ vardecl_or_statement:
     { grammar_logger "vardecl_or_statement_statement" ; [s] }
   | v=var_decl
     { grammar_logger "vardecl_or_statement_vardecl" ; v }
-  | f=closure_def
+  | f=function_def
     { grammar_logger "vardecl_or_statement_closuredef" ; [f] }
 
 top_vardecl_or_statement:
@@ -800,5 +880,5 @@ top_vardecl_or_statement:
     { grammar_logger "top_vardecl_or_statement_statement" ; [s] }
   | v=top_var_decl
     { grammar_logger "top_vardecl_or_statement_top_vardecl" ; v }
-  | f=closure_def
+  | f=function_def
     { grammar_logger "top_vardecl_or_statement_closuredef" ; [f] }
